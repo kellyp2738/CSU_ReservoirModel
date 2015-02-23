@@ -56,12 +56,12 @@ seiarModel <- function(t,y,params){
 	with(c(as.list(y),params), {
 		N <- S + E + I + R ## Total population size
 		nu<-mu*N                           ## Births (zero in current model, as are deaths)
-		dS <- nu - beta*S*(I+D) - mu*S        ## Susceptible
+		dS <- lambda*R + nu - beta*S*(I+D) - mu*S        ## Susceptible
 		dE <- beta*S*(I+D) - sigma*E - mu*E    ## Exposed (incubating)
 		dI <- sigma*E - gamma*I - mu*I         ## Infectious
 		dD <- cfr*gamma*I - kappa*D    ## Dead but still infectious
 		dG <- kappa*D                   ## Gone (dead and no longer infectious)
-		dR <- (1-cfr)*gamma*I - mu*R           ## Recovered & immune
+		dR <- (1-cfr)*gamma*I - mu*R - lambda*R          ## Recovered & immune
 		return(list(c(dS=dS,dE=dE,dI=dI,dD=dD,dG=dG,dR=dR)))
 	})
 }
@@ -88,6 +88,7 @@ param.vals<-c( ## Other parameters
               mu= 0.002, ## I MADE THIS NUMBER UP. Assume no birth/death for now, though it doesn't affect this toy model much. For 50 yr life expect mu=.02/365.25
               sigma=1/9.1, ## progression rate = 1/incubation or 1/latent period (assumed to be the
                            ## same for Ebola). Lancet estimat 9.1 days; CDC estimate 6 days.
+              lambda=1/4, ## 1/duration immune
               kappa=1/4, ## I MADE THIS NUMBER UP. how long are dead carcasses infectious?
               gamma=1/6,  ## 1/infectious period. CDC estimate 6 days
               cfr = .3) ## case fatality rate. Lancet for Liberia = 72.3%
@@ -159,7 +160,7 @@ lines(tcSymp$time, tcSymp$R, col='orange')
 lines(tcSymp$time, tcSymp$D, col='black')
 lines(tcSymp$time, tcSymp$G, col='yellow')
 
-
+tail(tcSymp)
 
 tcAsymp <- runSEIAR(sympVals[2])    ## 60% symptomatic
 ## Compare calculated beta values. Note beta is bigger to make up for lower symptomatic proportion.
