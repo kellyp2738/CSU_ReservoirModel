@@ -28,6 +28,8 @@
 
 rm(list=ls(all=T))
 library(deSolve) ## differential equation solver library
+library(Rcpp)
+library(RcppEigen)
 
 ## CONTROL PARAMETERS
 SAVEPLOTS <- FALSE
@@ -83,7 +85,7 @@ init <- c(S = N0-1,
 times<-seq(0,500,1) ## Simulate for 500 days
 
 param.vals<-c( ## Other parameters
-              beta= NA, ## BETA PARAMETER IS CURRENTLY MISCALCULATED Calculated based on R0 and other parameters, see below.
+              beta= 0.02, ## BETA PARAMETER IS CURRENTLY MISCALCULATED Calculated based on R0 and other parameters, see below.
               N0=N0,
               mu= 0.002, ## I MADE THIS NUMBER UP. Assume no birth/death for now, though it doesn't affect this toy model much. For 50 yr life expect mu=.02/365.25
               sigma=1/9.1, ## progression rate = 1/incubation or 1/latent period (assumed to be the
@@ -92,6 +94,27 @@ param.vals<-c( ## Other parameters
               kappa=1/4, ## I MADE THIS NUMBER UP. how long are dead carcasses infectious?
               gamma=1/6,  ## 1/infectious period. CDC estimate 6 days
               cfr = .3) ## case fatality rate. Lancet for Liberia = 72.3%
+
+## Jacobian matrix -- partial derivatives of the SEIDR model
+## make.jacobian() fills in paramter values to generate the matrix
+make.jacobian<-function(params){
+  with(as.list(params),
+       matrix(data=c(c(0, 0, -1*beta*init[[1]], -1*beta*init[[1]], lambda),
+                c(0, -1*sigma, beta*init[[1]], beta*init[[1]], 0),
+                c(0, sigma, gamma, 0, 0),
+                c(0, 0, cfr*gamma, kappa, 0),
+                c(0, 0, gamma-(cfr*gamma), 0, lambda)), 5, 5)
+       )
+}
+
+jacobian=make.jacobian(param.vals)
+Ro<-max(eigen(jacobian)$values)
+
+## Problems:
+## 1. We'd like to set Ro and work backward; this technique doesn't allow that
+## 2. The Ro we get here is crazy high -- 93!
+## 3. The Ro is not constant with population size (model is density dependent as contacts scale with N)
+## 4. Solve the dependence on population size by making the model frequency dependent? (reconsider the partial derivatives)
 
 Ro.calc<-function(params) { ## Analytical solution for R0
     with(as.list(params),
