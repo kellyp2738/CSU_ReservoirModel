@@ -30,6 +30,10 @@ rm(list=ls(all=T))
 library(deSolve) ## differential equation solver library
 library(Rcpp)
 library(RcppEigen)
+library(scales)
+require(gplots)
+require(RColorBrewer)
+require(fields)
 
 ## CONTROL PARAMETERS
 SAVEPLOTS <- FALSE
@@ -54,12 +58,12 @@ if(SAVEPLOTS){
 ###   cumInc             ## cumulative number of symptomatic infected individuals (excludes asymptomatic)
 ###   cumMort            ## cumulative number of EVD deaths
 ## Set up model equations
-seiarModel <- function(t,y,params){
+seidrModel <- function(t,y,params){
 	with(c(as.list(y),params), {
 		N <- S + E + I + R ## Total population size
 		nu<-mu*N                           ## Births (zero in current model, as are deaths)
-		dS <- lambda*R + nu - beta*S*(I+D) - mu*S        ## Susceptible
-		dE <- beta*S*(I+D) - sigma*E - mu*E    ## Exposed (incubating)
+		dS <- lambda*R + nu - beta*S*(I+D)/N - mu*S        ## Susceptible
+		dE <- beta*S*(I+D)/N - sigma*E - mu*E    ## Exposed (incubating)
 		dI <- sigma*E - gamma*I - mu*I         ## Infectious
 		dD <- cfr*gamma*I - kappa*D    ## Dead but still infectious
 		dG <- kappa*D                   ## Gone (dead and no longer infectious)
@@ -82,21 +86,153 @@ init <- c(S = N0-1,
           D = 0,
           G = 0,
           R = 0)
-times<-seq(0,500,1) ## Simulate for 500 days
+times<-seq(0,1000,1) ## Simulate for 1000 days
 
+## Tune beta so that the model R0 (calculated as the dominant eigenvalue of the Jacobian matrix describing the model) is greater than R0:
+## Started with kappa=4 for the beta tuning
 param.vals<-c( ## Other parameters
-              beta= 0.02, ## BETA PARAMETER IS CURRENTLY MISCALCULATED Calculated based on R0 and other parameters, see below.
+              beta=1.2, ## Beta set as the minimum integer value allowing R0>1 while other params are held constant
               N0=N0,
-              mu= 0.002, ## I MADE THIS NUMBER UP. Assume no birth/death for now, though it doesn't affect this toy model much. For 50 yr life expect mu=.02/365.25
+              mu= 0.00, ## Assume no birth/death for now, though it doesn't affect this toy model much. For 50 yr life expect mu=.02/365.25
               sigma=1/9.1, ## progression rate = 1/incubation or 1/latent period (assumed to be the
                            ## same for Ebola). Lancet estimat 9.1 days; CDC estimate 6 days.
-              lambda=1/4, ## 1/duration immune
-              kappa=1/4, ## I MADE THIS NUMBER UP. how long are dead carcasses infectious?
+              lambda=1.2, ## 1/duration immune
+              kappa=NA, ## how long are dead carcasses infectious?
               gamma=1/6,  ## 1/infectious period. CDC estimate 6 days
-              cfr = .3) ## case fatality rate. Lancet for Liberia = 72.3%
+              cfr=NA) ## case fatality rate. Lancet for Liberia = 72.3%
+
+## Calculate R0 from the Jacobian matrix of the model
+R0.from.jacobian<-function(params, kappa, cfr, init, N0){
+  R0<-max(eigen(matrix(data=c(c(0, 0, (-1*params['beta']*init[[1]])/N0, (-1*params['beta']*init[[1]])/N0, params['lambda']),
+                               c(0, -1*params['sigma'], (params['beta']*init[[1]])/N0, (params['beta']*init[[1]])/N0, 0),
+                               c(0, params['sigma'], params['gamma'], 0, 0),
+                               c(0, 0, cfr*params['gamma'], kappa, 0),
+                               c(0, 0, params['gamma']-(cfr*params['gamma']), 0, params['lambda'])), 5, 5, byrow=TRUE))$values)
+  return(R0)
+}
+
+## Take a look at R0 for different values of kappa (now holding beta constant)
+R0.by.kappa=c()
+for(k in seq(1,10,1)){
+  R0.by.kappa=c(R0.by.kappa, R0.from.jacobian(param.vals, 1/k, 0.3, init, N0))
+}
+R0.by.kappa # all R0 values are > 1
+
+## Run the model and return the time series
+runSEIDR <- function(paramVals = param.vals, kappa, cfr, Init=init, N=N0, browse=F){
+  if(browse) browser()
+  paramVals['kappa']<-kappa
+  paramVals['cfr']<-cfr
+  R0=round(R0.from.jacobian(param.vals, kappa, cfr, Init, N),3)
+  #print(paste("Calculated R0 value for kappa=",kappa,": ",R0,".",sep=""))
+  tc <- data.frame(lsoda(init, times, seidrModel, paramVals))  ## Run ODE model
+  tc$N <-  rowSums(tc[,c('S','E','I','D','G','R')])    ## Calculate total population size
+  #tc[,-1] <- tc[,-1] / 10^3                                    ## Show numbers (other than time) in thousands
+  tc$Reff <- R0*(tc$S/tc$N)                                    ## Calculate R_effective
+  return(list(tc, R0))
+}
+
+## Test the model out on a single set of parameters
+tc<-runSEIDR(kappa=1/6, cfr=0.3)
+
+## Modulate kappa
+kappa.sensitivity<-function(min.kappa, max.kappa, plot=FALSE){
+  end.points<-data.frame()
+  R0.values<-c()
+  for(k in seq(min.kappa, max.kappa)){
+    tc.full<-runSEIDR(kappa=1/k, cfr=0.3) # set the cfr manually here
+    tc<-tc.full[[1]]
+    head(tc)
+    R0.values<-c(R0.values, tc.full[[2]])
+    if(plot){
+      plot(tc$time, tc$S, type="l", col="blue", ylim=c(0,4001), main=paste('kappa=1/',k, sep=""))
+      lines(tc$time, tc$E, col='green')
+      lines(tc$time, tc$I, col='red')
+      lines(tc$time, tc$R, col='orange')
+      lines(tc$time, tc$D, col='black')
+      lines(tc$time, tc$G, col='pink')
+      legend(x='topright', legend=c('S', 'E', 'I', 'R', 'D', 'G'), fill=c('blue', 'green', 'red', 'orange', 'black', 'pink'), bty='n')
+    }
+    end<-tc[length(tc[,1]),]
+    end.points<-rbind(end.points, end)
+  }
+  denom<-seq(min.kappa, max.kappa)
+  actual.k<-1/denom
+  end.points<-cbind(end.points, actual.k, R0.values)
+  names(end.points)<-c('time', 'S', 'E', 'I', 'D', 'G', 'R', 'N', 'Reff', 'kappa', 'R0')
+  return(end.points)
+}
+
+eq<-kappa.sensitivity(1,30, plot=FALSE)
+## If time = 500, then there are still some infected individuals left... but if time = 1000, then that number dips below 0
+plot(eq$kappa, round(eq$I, 3), pch=16, xlab='kappa', ylab='Number Infected Individuals', col=alpha('black', 0.5))
+
+## Modulate kappa and cfr
+kappa.cfr.sensitivity<-function(min.kappa, max.kappa, plot=FALSE){
+  end.inf<-data.frame()
+  end.rec<-data.frame()
+  R0.values<-c()
+  for(k in seq(min.kappa, max.kappa, 0.1)){
+    k.cfr.i<-c()
+    for(cv in seq(0,1,0.01)){
+      tc.full<-runSEIDR(kappa=1/k, cfr=cv)
+      tc<-tc.full[[1]]
+      R0.values<-c(R0.values, tc.full[[2]])
+      if(plot){
+        plot(tc$time, tc$S, type="l", col="blue", ylim=c(0,4000000), main=paste('kappa=1/', k, 'cfr=', cv, sep=""))
+        lines(tc$time, tc$E, col='green')
+        lines(tc$time, tc$I, col='red')
+        lines(tc$time, tc$R, col='orange')
+        lines(tc$time, tc$D, col='black')
+        lines(tc$time, tc$G, col='pink')
+        legend(x='topright', legend=c('S', 'E', 'I', 'R', 'D', 'G'), fill=c('blue', 'green', 'red', 'orange', 'black', 'pink'), bty='n')
+      }
+      k.cfr.i<-c(k.cfr.i, tc[length(tc[,1]),]$I)
+      k.cfr.r<-c(k.cfr.r, tc[length(tc[,1]),]$R)
+    }
+    end.inf<-rbind(end.inf, k.cfr.i)
+    end.rec<-rbind(end.rec, k.cfr.r)
+  }
+  denom<-seq(min.kappa, max.kappa)
+  actual.k<-1/denom
+  cfr<-seq(0,1,0.1)
+  return(list(end.inf, R0.values))
+}
+
+## Run the kappa and cfr sensitivity analysis
+eq.k.cfr<-kappa.cfr.sensitivity(1, 10, plot=FALSE)
+# columns = cfr, rows = kappa
+inf.data<-eq.k.cfr[[1]] # number infected
+R0<-eq.k.cfr[[2]] # R0 calculated for each combo of kappa and cfr
+
+## Heatmaps show insensitivity of model to kappa
+eq.k.cfr.matrix<-as.matrix(data.frame(inf.data))
+eq.pal<-brewer.pal(9, "Reds")
+image.plot(x=seq(1,10,0.1), y=seq(0,1,0.01), z=eq.k.cfr.matrix, col=eq.pal)
+
+## Regular plots also show insensitivity of model to kappa
+plot(x=seq(0,1,0.01), y=inf.data[1,]/4E6*100, ylab='% Infected', xlab='Case-Fatality Ratio', type='l', xlim=c(0,0.2))
+lines(x=seq(0,1,0.01), y=inf.data[2,]/4E6*100)
+lines(x=seq(0,1,0.01), y=inf.data[3,]/4E6*100)
+lines(x=seq(0,1,0.01), y=inf.data[4,]/4E6*100)
+lines(x=seq(0,1,0.01), y=inf.data[5,]/4E6*100)
+lines(x=seq(0,1,0.01), y=inf.data[6,]/4E6*100)
+lines(x=seq(0,1,0.01), y=inf.data[7,]/4E6*100)
+lines(x=seq(0,1,0.01), y=inf.data[8,]/4E6*100)
+lines(x=seq(0,1,0.01), y=inf.data[9,]/4E6*100)
+lines(x=seq(0,1,0.01), y=inf.data[10,]/4E6*100)
+
+
+## Problems:
+## 1. We'd like to set Ro and work backward; this technique doesn't allow that
+## 2. The Ro we get here is crazy high -- 93!
+## 3. The Ro is not constant with population size (model is density dependent as contacts scale with N)
+## 4. Solve the dependence on population size by making the model frequency dependent? (reconsider the partial derivatives)
+
 
 ## Jacobian matrix -- partial derivatives of the SEIDR model
 ## make.jacobian() fills in paramter values to generate the matrix
+## this matrix represents a density-dependent formulation of the model
 make.jacobian<-function(params){
   with(as.list(params),
        matrix(data=c(c(0, 0, -1*beta*init[[1]], -1*beta*init[[1]], lambda),
@@ -106,15 +242,9 @@ make.jacobian<-function(params){
                 c(0, 0, gamma-(cfr*gamma), 0, lambda)), 5, 5)
        )
 }
-
 jacobian=make.jacobian(param.vals)
 Ro<-max(eigen(jacobian)$values)
 
-## Problems:
-## 1. We'd like to set Ro and work backward; this technique doesn't allow that
-## 2. The Ro we get here is crazy high -- 93!
-## 3. The Ro is not constant with population size (model is density dependent as contacts scale with N)
-## 4. Solve the dependence on population size by making the model frequency dependent? (reconsider the partial derivatives)
 
 Ro.calc<-function(params) { ## Analytical solution for R0
     with(as.list(params),
@@ -163,7 +293,7 @@ print(
 runSEIAR <- function(sympProp, paramVals = param.vals, basicReproNum = R0, browse=F){
 	if(browse) browser()
 	paramVals['symp'] <- sympProp
-	paramVals['beta'] <- beta.calc(basicReproNum,paramVals)
+	#paramVals['beta'] <- beta.calc(basicReproNum,paramVals)
 	print(paste("Calculated beta value for ",sympProp*100,"% symptomatic: ",round(paramVals['beta'],3),".",sep=""))
 	tc <- data.frame(lsoda(init, times, seiarModel, paramVals))  ## Run ODE model
 	tc$N <-  rowSums(tc[,c('S','E','I','D','G','R')])    ## Calculate total population size
@@ -176,12 +306,13 @@ sympVals <- c(1,.5)
 tcSymp <- runSEIAR(sympVals[1])     ## 100% symptomatic
 
 ## my edit: plotting scripts
-plot(tcSymp$time, tcSymp$S, type="l", col="blue")
+plot(tcSymp$time, tcSymp$S, type="l", col="blue", ylim=c(0,4001))
 lines(tcSymp$time, tcSymp$E, col='green')
 lines(tcSymp$time, tcSymp$I, col='red')
 lines(tcSymp$time, tcSymp$R, col='orange')
 lines(tcSymp$time, tcSymp$D, col='black')
-lines(tcSymp$time, tcSymp$G, col='yellow')
+lines(tcSymp$time, tcSymp$G, col='pink')
+legend(x='topright', legend=c('S', 'E', 'I', 'R', 'D', 'G'), fill=c('blue', 'green', 'red', 'orange', 'black', 'pink'), bty='n')
 
 tail(tcSymp)
 
